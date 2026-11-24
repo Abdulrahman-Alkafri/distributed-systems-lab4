@@ -1,0 +1,320 @@
+=====================================================================
+  LAB 4 - KUBERNETES CHEAT SHEET       (every command tested on the VM)
+=====================================================================
+
+# Connect to the VM (it will ask for your password)
+ssh -p 2222 zaza@192.168.122.250
+
+# Go to the project folder
+cd ~/lab4
+
+
+---------------------------------------------------------------------
+ 0. OPEN THE APP IN YOUR BROWSER
+---------------------------------------------------------------------
+
+# Run this and LEAVE IT RUNNING in its own terminal (Ctrl+C to stop)
+./expose.sh
+
+# Then open (accept the self-signed certificate warning):
+#   https://192.168.122.250:30443
+# The counters update live by themselves (SSE) - no refresh needed.
+
+# From inside the VM you can also use the minikube address directly:
+minikube ip
+curl -sk https://$(minikube ip):30443/ | grep "Pod Name"
+
+
+---------------------------------------------------------------------
+ 1. THE CLUSTER ITSELF
+---------------------------------------------------------------------
+
+# Is minikube running?
+minikube status
+
+# The single node of our cluster
+kubectl get nodes
+
+# Everything running in one shot (pods, services, deployments, replicasets, statefulsets)
+kubectl get all
+
+
+---------------------------------------------------------------------
+ 2. LISTING EACH KIND OF OBJECT
+---------------------------------------------------------------------
+
+# PODS - the running containers
+kubectl get pods
+
+# Same, plus pod IP and which node they run on
+kubectl get pods -o wide
+
+# DEPLOYMENTS - manage stateless apps (nginx, flask, the 2 workers, redis)
+kubectl get deployments
+
+# REPLICASETS - created automatically BY the deployments.
+# Rows with DESIRED 0 are old versions, kept so you can roll back.
+kubectl get replicasets
+
+# STATEFULSET - redpanda (3 brokers with stable names + own disks)
+kubectl get statefulset
+
+# The 3 broker pods with their fixed names redpanda-0/1/2
+kubectl get pods -l app=redpanda
+
+# SERVICES - the stable network names
+#   flask + redpanda-headless have CLUSTER-IP "None" = headless
+#   nginx is NodePort = reachable from outside
+kubectl get services
+
+# INGRESS - we do not use one (Nginx itself is our gateway), so this is empty.
+# To show the professor that Ingress exists as a concept:
+kubectl get ingress
+kubectl api-resources | grep ingress
+
+# PVC - the disks. One for redis, one per redpanda broker.
+kubectl get pvc
+
+# CONFIGMAP (nginx.conf) and SECRET (the TLS certificate)
+kubectl get configmap
+kubectl get secret
+
+# JOB - the one-time task that created the Kafka topics
+kubectl get jobs
+
+# Which pod IPs a Service currently points at
+kubectl get endpoints flask
+
+
+---------------------------------------------------------------------
+ 3. LOOKING INSIDE ONE OBJECT
+---------------------------------------------------------------------
+
+# Full details + events at the bottom (the best debugging command)
+kubectl describe pod redpanda-0
+kubectl describe deployment flask
+kubectl describe service nginx
+
+# The YAML Kubernetes is actually storing
+kubectl get deployment flask -o yaml
+
+# Open a shell inside a pod
+kubectl exec -it redpanda-0 -- bash
+
+# Run one command inside a pod
+kubectl exec deployment/redis -- redis-cli get global_visits
+
+
+---------------------------------------------------------------------
+ 4. LOGS
+---------------------------------------------------------------------
+
+# Counter worker live: "[P0 @ offset 12] visit from flask-xxx -> node=.., global=.."
+kubectl logs -f deployment/counter-worker
+
+# Audit worker live: JSON lines (timestamp, pod name, partition, offset)
+kubectl logs -f deployment/audit-worker
+
+# One Flask pod (use a real pod name from "kubectl get pods")
+kubectl logs -f deployment/flask
+
+# Nginx access log
+kubectl logs -f deployment/nginx
+
+# A broker
+kubectl logs redpanda-0 --tail=30
+
+# Logs of the PREVIOUS container (after a crash)
+kubectl logs redpanda-0 --previous
+
+
+---------------------------------------------------------------------
+ 5. SCALING AND UPDATES
+---------------------------------------------------------------------
+
+# Scale the web app
+kubectl scale deployment/flask --replicas=5
+kubectl scale deployment/flask --replicas=3
+
+# Watch pods appear/disappear live (Ctrl+C to stop)
+kubectl get pods -w
+
+# Restart all pods of a deployment (rolling, no downtime)
+kubectl rollout restart deployment/flask
+
+# Watch a rollout finish
+kubectl rollout status deployment/flask
+
+# Roll back to the previous version
+kubectl rollout undo deployment/flask
+
+# History of versions
+kubectl rollout history deployment/flask
+
+
+---------------------------------------------------------------------
+ 6. REDPANDA / KAFKA INSIDE KUBERNETES
+---------------------------------------------------------------------
+# Same rpk commands as Lab 3, just run inside a pod with "kubectl exec".
+
+# The 3 brokers (the one with * is the controller)
+kubectl exec redpanda-0 -- rpk cluster info
+
+# Is the cluster healthy?
+kubectl exec redpanda-0 -- rpk cluster health
+
+# Topics with partitions and replicas
+kubectl exec redpanda-0 -- rpk topic list
+
+# Partitions of visits-topic:
+#   LEADER  = which broker serves it
+#   REPLICAS = [0 1 2] means a copy on all 3 brokers
+#   EPOCH   = goes UP by 1 every time a new leader is elected
+kubectl exec redpanda-0 -- rpk topic describe visits-topic -p
+
+# The two consumer groups (fan-out)
+kubectl exec redpanda-0 -- rpk group list
+
+# Offsets, lag and which worker owns which partition
+kubectl exec redpanda-0 -- rpk group describe counter-group
+kubectl exec redpanda-0 -- rpk group describe audit-group
+
+# WATCH MESSAGES ARRIVE LIVE (refresh the web page to see one appear) - Ctrl+C to stop
+kubectl exec redpanda-0 -- rpk topic consume visits-topic -o end -f "P%p offset=%o key=%k value=%v\n"
+
+# First 10 messages from the beginning
+kubectl exec redpanda-0 -- rpk topic consume visits-topic -o start -n 10 -f "P%p offset=%o key=%k\n"
+
+# Only partition 0 - proves one pod's events all land in the same partition
+kubectl exec redpanda-0 -- rpk topic consume visits-topic -p 0 -o start -n 10 -f "P%p key=%k\n"
+
+
+---------------------------------------------------------------------
+ 7. DLQ TEST  <<< COPY-PASTE THIS IN FRONT OF THE PROFESSOR >>>
+---------------------------------------------------------------------
+
+# STEP 1 - in terminal A, watch the worker live:
+kubectl logs -f deployment/counter-worker
+
+# STEP 2 - in terminal B, send a BROKEN message (not valid JSON):
+echo "this is not json" | kubectl exec -i redpanda-0 -- rpk topic produce visits-topic -k bad-1
+
+# Terminal A immediately prints:
+#   [P1 @ offset 6] MALFORMED b'this is not json' -> sent to visits-dlq (JSONDecodeError(...))
+# and the worker KEEPS RUNNING - it does not crash.
+
+# STEP 3 - send JSON that is missing the container_id field:
+echo '{"wrong_field": 1}' | kubectl exec -i redpanda-0 -- rpk topic produce visits-topic -k bad-2
+
+# STEP 4 - send JSON where container_id is empty:
+echo '{"container_id": null}' | kubectl exec -i redpanda-0 -- rpk topic produce visits-topic -k bad-3
+
+# STEP 5 - show the 3 broken messages now sitting in the DLQ topic,
+#          each with the ERROR and WHERE IT CAME FROM:
+kubectl exec redpanda-0 -- rpk topic consume visits-dlq -o start -n 3 -f "%k | %v | %h{%k=%v; }\n"
+
+# STEP 6 - prove the worker survived (RESTARTS must still be 0):
+kubectl get pods -l app=counter-worker
+
+# STEP 7 - prove the broken messages were NOT counted:
+#          global_visits only counts GOOD events
+kubectl exec deployment/redis -- redis-cli get global_visits
+
+
+---------------------------------------------------------------------
+ 8. CHAOS TEST  (kill a broker pod while traffic is flowing)
+---------------------------------------------------------------------
+
+# STEP 1 - note the LEADER and EPOCH of each partition
+kubectl exec redpanda-0 -- rpk topic describe visits-topic -p
+
+# STEP 2 - pick a broker that IS a leader above (example: redpanda-1) and kill it.
+#          Keep the web page open in the browser - it keeps working.
+kubectl delete pod redpanda-1
+
+# STEP 3 - Kubernetes recreates it with the SAME NAME automatically
+kubectl get pods -l app=redpanda -w
+
+# STEP 4 - ask a SURVIVING broker: the EPOCH went UP = a new leader was elected
+kubectl exec redpanda-0 -- rpk topic describe visits-topic -p
+
+# STEP 5 - it reattached to its OWN disk (same PVC as before)
+kubectl get pvc
+
+# STEP 6 - cluster healthy again, no messages lost
+kubectl exec redpanda-0 -- rpk cluster health
+kubectl exec deployment/redis -- redis-cli get global_visits
+
+
+---------------------------------------------------------------------
+ 9. PARTITION LOCKING TEST  (one partition = one worker)
+---------------------------------------------------------------------
+
+# Run 3 counter workers instead of 1
+kubectl scale deployment/counter-worker --replicas=3
+
+# Wait ~20s, then look at MEMBER-ID: 3 DIFFERENT ids own P0, P1 and P2
+kubectl exec redpanda-0 -- rpk group describe counter-group
+
+# A 4th worker would sit idle - there are only 3 partitions to hand out
+kubectl scale deployment/counter-worker --replicas=4
+
+# Back to 1 worker (it takes all 3 partitions again)
+kubectl scale deployment/counter-worker --replicas=1
+
+
+---------------------------------------------------------------------
+ 10. STATE IN REDIS
+---------------------------------------------------------------------
+
+# Total visits counted by the worker
+kubectl exec deployment/redis -- redis-cli get global_visits
+
+# Visits per Flask pod
+kubectl exec deployment/redis -- redis-cli hgetall node_visits
+
+# Which Kafka partition each Flask pod writes to
+kubectl exec deployment/redis -- redis-cli hgetall node_partition
+
+
+---------------------------------------------------------------------
+ 11. DEPLOY / UPDATE / CLEAN UP
+---------------------------------------------------------------------
+
+# Get the newest code from GitHub and deploy everything
+git pull
+./deploy.sh
+
+# Apply the manifests only (no image rebuild)
+kubectl apply -f k8s/
+
+# Apply one file
+kubectl apply -f k8s/06-nginx.yaml
+
+# Delete everything we created (keeps the cluster itself)
+kubectl delete -f k8s/
+
+# Stop / start the whole cluster
+minikube stop
+minikube start
+
+# Delete the cluster completely and start over
+minikube delete
+
+
+---------------------------------------------------------------------
+ 12. TROUBLESHOOTING
+---------------------------------------------------------------------
+
+# Why is a pod not starting? (look at Events at the bottom)
+kubectl describe pod <pod-name>
+
+# Cluster events, newest last
+kubectl get events --sort-by=.metadata.creationTimestamp | tail -20
+
+# Is a Service actually pointing at pods? (empty ENDPOINTS = labels do not match)
+kubectl get endpoints
+
+# CPU / memory per pod (needs the addon first)
+minikube addons enable metrics-server
+kubectl top pods
