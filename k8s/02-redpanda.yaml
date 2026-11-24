@@ -47,6 +47,10 @@ metadata:
 spec:
   serviceName: redpanda-headless
   replicas: 3
+  # Start all 3 brokers AT THE SAME TIME (the default is one-by-one).
+  # They must all be up together to form the cluster: broker 0 waits for 1 and 2,
+  # so starting them one at a time would deadlock.
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: redpanda
