@@ -1,0 +1,62 @@
+# The two CONSUMERS. Same image as Flask, different command.
+#
+# Fan-out: they read the SAME topic but use DIFFERENT consumer groups,
+# so each one gets its own copy of every event.
+#   counter-worker -> group "counter-group" -> updates Redis, broken messages go to the DLQ
+#   audit-worker   -> group "audit-group"   -> writes an audit log line per event
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: counter-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: counter-worker
+  template:
+    metadata:
+      labels:
+        app: counter-worker
+    spec:
+      containers:
+        - name: worker
+          image: lab4-app:1
+          imagePullPolicy: Never
+          command: ["python", "-u", "counter_worker.py"]
+          env:
+            - name: KAFKA_BROKERS
+              value: "redpanda:9092"
+            - name: REDIS_HOST
+              value: "redis"
+          resources:
+            requests: { memory: "64Mi", cpu: "50m" }
+            limits:   { memory: "160Mi" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-worker
+  template:
+    metadata:
+      labels:
+        app: audit-worker
+    spec:
+      containers:
+        - name: worker
+          image: lab4-app:1
+          imagePullPolicy: Never
+          command: ["python", "-u", "audit_worker.py"]
+          env:
+            - name: KAFKA_BROKERS
+              value: "redpanda:9092"
+            - name: REDIS_HOST
+              value: "redis"
+          resources:
+            requests: { memory: "64Mi", cpu: "50m" }
+            limits:   { memory: "160Mi" }

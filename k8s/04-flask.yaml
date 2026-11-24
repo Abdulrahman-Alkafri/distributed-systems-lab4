@@ -1,0 +1,53 @@
+# Flask = the web app and the event PRODUCER. 3 pods (replicas: 3).
+#
+# The Service is HEADLESS (clusterIP: None) on purpose:
+#   a normal Service hides the pods behind one IP and balances by itself.
+#   Headless makes DNS return ALL 3 pod IPs, so Nginx can see each pod
+#   and do its own "random two least_conn" balancing.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: flask
+  template:
+    metadata:
+      labels:
+        app: flask
+    spec:
+      containers:
+        - name: flask
+          image: lab4-app:1
+          imagePullPolicy: Never      # image is built inside minikube, never pulled from the internet
+          command: ["gunicorn", "-w", "1", "--threads", "8", "-b", "0.0.0.0:5000", "app:app"]
+          env:
+            - name: KAFKA_BROKERS
+              value: "redpanda:9092"
+            - name: REDIS_HOST
+              value: "redis"
+          ports:
+            - containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { memory: "64Mi", cpu: "50m" }
+            limits:   { memory: "160Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask
+spec:
+  clusterIP: None        # headless: DNS gives Nginx all 3 pod IPs
+  selector:
+    app: flask
+  ports:
+    - port: 5000

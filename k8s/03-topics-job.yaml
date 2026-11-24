@@ -1,0 +1,37 @@
+# A Job runs ONCE and then stops (unlike a Deployment, which runs forever).
+# This one waits for the 3 brokers, then creates the topics.
+#
+#   visits-topic : 3 partitions, 3 replicas  (one partition per Flask pod)
+#   visits-dlq   : 1 partition,  3 replicas  (the Dead Letter Queue for broken messages)
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-topics
+spec:
+  backoffLimit: 10          # if it fails, retry up to 10 times
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rpk
+          image: redpandadata/redpanda:v24.2.7
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              B=redpanda:9092
+              A=redpanda:9644
+              # wait until all 3 brokers are up and healthy
+              rpk cluster health -X brokers=$B -X admin.hosts=$A --watch --exit-when-healthy
+              # make sure internal topics are also replicated 3 times
+              rpk cluster config set internal_topic_replication_factor 3 -X brokers=$B -X admin.hosts=$A
+              rpk cluster config set default_topic_replications 3 -X brokers=$B -X admin.hosts=$A
+              # create the topics ("|| true" = ignore "already exists")
+              rpk topic create visits-topic --partitions 3 --replicas 3 -X brokers=$B || true
+              rpk topic create visits-dlq   --partitions 1 --replicas 3 -X brokers=$B || true
+              rpk topic describe visits-topic -p -X brokers=$B
+          resources:
+            requests: { memory: "64Mi", cpu: "50m" }
+            limits:   { memory: "256Mi" }

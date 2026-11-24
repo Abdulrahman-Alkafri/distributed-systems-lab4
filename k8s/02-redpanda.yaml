@@ -1,0 +1,104 @@
+# Redpanda = the 3-broker Kafka cluster, deployed as a StatefulSet.
+#
+# Why StatefulSet and not Deployment?
+#   - stable names:   redpanda-0, redpanda-1, redpanda-2 (a Deployment gives random names)
+#   - stable storage: each pod keeps its OWN disk (volumeClaimTemplates)
+#   Brokers need both, because each one stores different partition data.
+#
+# Two Services:
+#   "redpanda-headless" -> gives each pod its own DNS name (redpanda-0.redpanda-headless)
+#                          brokers use this to find each other
+#   "redpanda"          -> one ClusterIP that clients (Flask, workers) connect to
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda-headless
+spec:
+  clusterIP: None                   # None = headless = DNS returns pod IPs, no load balancing
+  publishNotReadyAddresses: true    # brokers must find each other BEFORE they are ready
+  selector:
+    app: redpanda
+  ports:
+    - name: kafka
+      port: 9092
+    - name: rpc
+      port: 33145
+    - name: admin
+      port: 9644
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+spec:
+  selector:
+    app: redpanda
+  ports:
+    - name: kafka
+      port: 9092
+    - name: admin
+      port: 9644
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redpanda
+spec:
+  serviceName: redpanda-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redpanda
+  template:
+    metadata:
+      labels:
+        app: redpanda
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: redpanda
+          image: redpandadata/redpanda:v24.2.7
+          command:
+            - /bin/bash
+            - -c
+            # $HOSTNAME is redpanda-0 / redpanda-1 / redpanda-2
+            # ${HOSTNAME##*-} takes the number after the last "-" -> 0 / 1 / 2 = node id
+            - |
+              exec redpanda start \
+                --mode=dev-container \
+                --smp=1 \
+                --memory=400M \
+                --node-id=${HOSTNAME##*-} \
+                --kafka-addr=PLAINTEXT://0.0.0.0:9092 \
+                --advertise-kafka-addr=PLAINTEXT://${HOSTNAME}.redpanda-headless:9092 \
+                --rpc-addr=0.0.0.0:33145 \
+                --advertise-rpc-addr=${HOSTNAME}.redpanda-headless:33145 \
+                --seeds=redpanda-0.redpanda-headless:33145,redpanda-1.redpanda-headless:33145,redpanda-2.redpanda-headless:33145
+          ports:
+            - name: kafka
+              containerPort: 9092
+            - name: rpc
+              containerPort: 33145
+            - name: admin
+              containerPort: 9644
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/redpanda/data
+          resources:
+            requests: { memory: "450Mi", cpu: "100m" }
+            limits:   { memory: "700Mi" }
+  # One PVC per pod, created automatically: data-redpanda-0, data-redpanda-1, data-redpanda-2
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

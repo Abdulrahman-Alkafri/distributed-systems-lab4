@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.log
+# never commit TLS keys - deploy.sh generates them on the VM
+*.key
+*.crt
