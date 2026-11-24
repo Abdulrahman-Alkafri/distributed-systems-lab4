@@ -20,7 +20,10 @@ data:
       upstream flask_app {
         zone flask_app 64k;
         random two least_conn;        # pick 2 random pods, send to the one with fewer connections
-        server flask:5000 resolve;    # "flask" is the headless Service = all 3 pod IPs
+        # The full DNS name is required: nginx's resolver does NOT add the
+        # ".default.svc.cluster.local" suffix the way normal Linux lookups do.
+        # This is the headless Service, so DNS returns all 3 Flask pod IPs.
+        server flask.default.svc.cluster.local:5000 resolve;
       }
 
       # port 80 -> redirect everything to HTTPS
