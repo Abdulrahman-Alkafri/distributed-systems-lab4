@@ -3,11 +3,12 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "==> 1/4  Building the app image INSIDE minikube's docker"
-# This makes "docker build" put the image where minikube can see it,
-# so Kubernetes never has to download it from the internet.
-eval "$(minikube docker-env)"
+echo "==> 1/4  Building the app image and loading it into minikube"
+# Build with the VM's normal docker...
 docker build -t lab4-app:1 ./app
+# ...then copy the image into the cluster, so Kubernetes never downloads it
+# from the internet (that is why the manifests say imagePullPolicy: Never).
+minikube image load lab4-app:1
 
 echo "==> 2/4  Creating the TLS certificate secret (only the first time)"
 # The certificate is generated HERE, not stored in git.
