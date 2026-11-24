@@ -65,7 +65,7 @@ spec:
             # $HOSTNAME is redpanda-0 / redpanda-1 / redpanda-2
             # ${HOSTNAME##*-} takes the number after the last "-" -> 0 / 1 / 2 = node id
             - |
-              exec redpanda start \
+              exec rpk redpanda start \
                 --mode=dev-container \
                 --smp=1 \
                 --memory=400M \

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Kubernetes Objects Explained</title>
+<style>
+  @page { margin: 18mm 15mm; }
+  body { font-family: "DejaVu Sans", Arial, sans-serif; font-size: 10.5pt; line-height: 1.5; color: #1a1a1a; }
+  h1 { font-size: 22pt; color: #14607a; margin: 0 0 4px 0; }
+  .sub { color: #666; font-size: 10pt; margin-bottom: 18px; }
+  h2 { font-size: 14pt; color: #14607a; border-bottom: 2px solid #14607a; padding-bottom: 3px; margin-top: 22px; }
+  h3 { font-size: 11.5pt; color: #b2560d; margin-bottom: 4px; margin-top: 14px; }
+  p { margin: 6px 0; }
+  code { font-family: "DejaVu Sans Mono", monospace; font-size: 9pt; background: #eef2f4; padding: 1px 4px; }
+  pre { font-family: "DejaVu Sans Mono", monospace; font-size: 8.5pt; background: #f4f6f7;
+        border-left: 3px solid #14607a; padding: 8px 10px; white-space: pre-wrap; margin: 8px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.5pt; }
+  th { background: #14607a; color: #fff; text-align: left; padding: 6px 8px; }
+  td { border-bottom: 1px solid #ccd6da; padding: 6px 8px; vertical-align: top; }
+  tr:nth-child(even) td { background: #f7f9fa; }
+  .box { background: #fdf6ec; border-left: 4px solid #b2560d; padding: 8px 12px; margin: 10px 0; }
+  .analogy { background: #eef7f0; border-left: 4px solid #2a7a4b; padding: 8px 12px; margin: 8px 0; }
+  .pagebreak { page-break-before: always; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+</style>
+</head>
+<body>
+
+<h1>Kubernetes Objects Explained</h1>
+<div class="sub">Distributed Systems Lab 4 &mdash; Pods, ReplicaSets, Deployments, StatefulSets, Services, Ingress</div>
+
+<h2>1. What Kubernetes actually does</h2>
+<p>In Docker Compose you <em>tell the machine what to run</em>. In Kubernetes you <em>describe what you want to exist</em>, and the cluster keeps making reality match that description.</p>
+
+<div class="analogy"><b>Analogy.</b> Docker Compose is cooking the meal yourself. Kubernetes is telling a kitchen manager "there must always be 3 plates of pasta on the counter". If someone takes a plate, the manager makes another one. You never cook again &mdash; you only change the number.</div>
+
+<p>This is called the <b>desired state</b> model. You write a YAML file saying <code>replicas: 3</code>. A controller inside Kubernetes constantly compares <em>desired</em> (3) to <em>actual</em> (2, because a pod crashed) and fixes the difference. This is why Kubernetes "self-heals" &mdash; nothing magic, just a loop that never stops checking.</p>
+
+<h2>2. Pod &mdash; the smallest unit</h2>
+<p>A <b>Pod</b> is one or more containers that share a network address and storage. In practice, almost always <b>one container = one pod</b>.</p>
+<p>Key facts that explain everything else:</p>
+<ul>
+  <li>Every pod gets its <b>own IP address</b> inside the cluster.</li>
+  <li>Pods are <b>disposable</b>. They are never repaired &mdash; a broken pod is deleted and a brand-new one is created, with a <b>new name and new IP</b>.</li>
+  <li>Because IPs change, you must never connect to a pod IP directly. That is exactly the problem a <b>Service</b> solves.</li>
+</ul>
+<p>You rarely create pods by hand. You create a Deployment or StatefulSet, and <em>it</em> creates the pods.</p>
+
+<h2>3. ReplicaSet &mdash; keeps N copies alive</h2>
+<p>A <b>ReplicaSet</b> has exactly one job: make sure a given number of identical pods are running. If you ask for 3 and one dies, it immediately starts a replacement.</p>
+<div class="box"><b>You almost never write a ReplicaSet yourself.</b> You write a Deployment, and the Deployment creates the ReplicaSet for you. When you run <code>kubectl get replicaset</code> and see a name like <code>flask-7d4b8c9f5</code>, that is the ReplicaSet the <code>flask</code> Deployment made. The random suffix is a hash of the pod template.</div>
+
+<h2>4. Deployment &mdash; ReplicaSets plus safe updates</h2>
+<p>A <b>Deployment</b> manages ReplicaSets so you can change your app without downtime. It is the normal choice for anything <b>stateless</b> &mdash; web servers, APIs, workers.</p>
+<p>When you change the image version, the Deployment does a <b>rolling update</b>: it creates a <em>new</em> ReplicaSet, starts new pods a few at a time, and scales the old ReplicaSet down to zero as the new pods become ready.</p>
+<pre>Deployment "flask"
+   |
+   +-- ReplicaSet flask-7d4b8c9f5  (version 1)  -> 0 pods   &lt;- old, kept for rollback
+   +-- ReplicaSet flask-96fd2a71c  (version 2)  -> 3 pods   &lt;- current
+                                                   |
+                                 +-----------------+-----------------+
+                              Pod flask-96fd2a71c-k2xp9  ... -wq4mn  ... -b8rzl</pre>
+<p>Because the old ReplicaSet is kept, <code>kubectl rollout undo deployment/flask</code> instantly goes back to the previous version.</p>
+<p><b>The hierarchy to remember:</b> Deployment &rarr; ReplicaSet &rarr; Pod &rarr; Container.</p>
+
+<h2>5. StatefulSet &mdash; for things that store data</h2>
+<p>A <b>StatefulSet</b> also runs N pods, but it gives each pod two things a Deployment cannot:</p>
+<table>
+  <tr><th style="width:28%">Guarantee</th><th>What it means</th></tr>
+  <tr><td><b>Stable name</b></td><td>Pods are numbered: <code>redpanda-0</code>, <code>redpanda-1</code>, <code>redpanda-2</code>. If <code>redpanda-1</code> dies, its replacement is called <code>redpanda-1</code> again &mdash; not a new random name.</td></tr>
+  <tr><td><b>Stable storage</b></td><td>Each pod gets its <em>own</em> disk that follows its name. <code>redpanda-1</code> always reattaches to the same volume with its own data.</td></tr>
+  <tr><td><b>Stable DNS</b></td><td>Each pod is reachable at a fixed address: <code>redpanda-1.redpanda-headless</code>.</td></tr>
+  <tr><td><b>Ordered start</b></td><td>Pods start one at a time, 0 then 1 then 2, and shut down in reverse.</td></tr>
+</table>
+<div class="box"><b>Why Redpanda needs this.</b> The three brokers are <em>not</em> interchangeable: each one stores different partition data, and they must find each other by a fixed address to elect partition leaders. With random Deployment names, a restarted broker would get a new identity and a new empty disk, and the cluster would break.</div>
+
+<h3>Deployment vs StatefulSet</h3>
+<table>
+  <tr><th style="width:24%"></th><th>Deployment</th><th>StatefulSet</th></tr>
+  <tr><td><b>Pod names</b></td><td>random: <code>flask-96fd2a71c-k2xp9</code></td><td>numbered: <code>redpanda-0</code></td></tr>
+  <tr><td><b>Storage</b></td><td>shared or none</td><td>one private disk per pod</td></tr>
+  <tr><td><b>Start order</b></td><td>all at once</td><td>one by one, in order</td></tr>
+  <tr><td><b>Pods are</b></td><td>interchangeable clones</td><td>unique individuals</td></tr>
+  <tr><td><b>Use for</b></td><td>web apps, APIs, workers</td><td>databases, Kafka/Redpanda, anything clustered</td></tr>
+  <tr><td><b>In Lab 4</b></td><td>Nginx, Flask, both workers, Redis</td><td>Redpanda (3 brokers)</td></tr>
+</table>
+
+<div class="pagebreak"></div>
+
+<h2>6. Service &mdash; a stable address for changing pods</h2>
+<p>Pods come and go with new IPs every time. A <b>Service</b> is a permanent name and IP that automatically points at whichever pods are currently alive.</p>
+<p>It finds its pods using <b>labels</b>, not names:</p>
+<pre>Service "redis"              Pod labels
+  selector:                    app: redis    &lt;- matched
+    app: redis                 app: flask    &lt;- ignored</pre>
+<p>So your Flask code simply connects to the hostname <code>redis</code>, forever, no matter how many times the Redis pod is recreated. Kubernetes runs an internal DNS server that resolves Service names.</p>
+
+<h3>The four kinds of Service</h3>
+<table>
+  <tr><th style="width:20%">Type</th><th>Reachable from</th><th>What it does</th></tr>
+  <tr><td><b>ClusterIP</b><br>(default)</td><td>inside the cluster only</td><td>One internal IP that load-balances across the matching pods. Used for <code>redis</code> and <code>redpanda</code>.</td></tr>
+  <tr><td><b>NodePort</b></td><td>outside, via <code>nodeIP:30000-32767</code></td><td>Opens the same fixed port on the node itself. Used for <code>nginx</code> in Lab 4.</td></tr>
+  <tr><td><b>LoadBalancer</b></td><td>outside, via a real load balancer</td><td>Asks the cloud provider (AWS/GCP) for a public load balancer. Does not work in plain minikube.</td></tr>
+  <tr><td><b>Headless</b><br><code>clusterIP: None</code></td><td>inside the cluster only</td><td>No IP and <em>no</em> load balancing. DNS returns the IP of <b>every</b> pod. Used for <code>flask</code> and <code>redpanda-headless</code>.</td></tr>
+</table>
+
+<div class="box"><b>Why Lab 4 uses a headless Service for Flask.</b> The assignment requires Nginx to balance with <code>random two least_conn</code> &mdash; it must see each pod separately to compare their connection counts. A normal ClusterIP Service would hide the three pods behind one IP and balance them itself, so Nginx would only ever see a single backend and its algorithm would do nothing. Headless gives Nginx all three pod IPs so it can do the balancing.</div>
+
+<h2>7. Ingress &mdash; one smart HTTP door</h2>
+<p>An <b>Ingress</b> is an HTTP/HTTPS router at the edge of the cluster. It reads the hostname and URL path of each request and forwards it to the right Service.</p>
+<pre>                        /api    -> Service api
+Internet -> Ingress --> /shop    -> Service shop
+                        /        -> Service web</pre>
+<p>An Ingress object is only a <em>rule list</em>. It does nothing on its own &mdash; you also need an <b>Ingress Controller</b> (itself usually an Nginx pod) that reads those rules and performs the routing. In minikube you enable one with <code>minikube addons enable ingress</code>.</p>
+
+<h3>NodePort vs Ingress</h3>
+<table>
+  <tr><th style="width:24%"></th><th>NodePort</th><th>Ingress</th></tr>
+  <tr><td><b>Works at</b></td><td>TCP level (any protocol)</td><td>HTTP/HTTPS only</td></tr>
+  <tr><td><b>Port</b></td><td>an odd high port (30000&ndash;32767)</td><td>normal 80 / 443</td></tr>
+  <tr><td><b>Routing by hostname or path</b></td><td>no</td><td>yes</td></tr>
+  <tr><td><b>TLS certificates</b></td><td>you handle it yourself</td><td>built in</td></tr>
+  <tr><td><b>Services exposed</b></td><td>one port per Service</td><td>many Services behind one entry point</td></tr>
+</table>
+<p><b>Lab 4 uses NodePort</b>, because the assignment asks for Nginx itself to be the gateway that terminates TLS and runs the hybrid load-balancing algorithm. Our Nginx pod is effectively playing the role an Ingress Controller would play &mdash; that is why no Ingress object is needed.</p>
+
+<h2>8. Storage: PersistentVolume and PersistentVolumeClaim</h2>
+<p>A container's filesystem is erased when the pod is replaced. To keep data you need a volume.</p>
+<table>
+  <tr><th style="width:26%">Object</th><th>Meaning</th></tr>
+  <tr><td><b>PersistentVolume (PV)</b></td><td>An actual piece of storage in the cluster (a disk).</td></tr>
+  <tr><td><b>PersistentVolumeClaim (PVC)</b></td><td>A <em>request</em> for storage: "I need 1 GB". Kubernetes finds or creates a matching PV and binds them.</td></tr>
+  <tr><td><b>StorageClass</b></td><td>The recipe used to create a PV automatically. minikube's default is <code>standard</code>.</td></tr>
+  <tr><td><b>volumeClaimTemplates</b></td><td>Only in a StatefulSet: creates <em>one PVC per pod</em> automatically &mdash; <code>data-redpanda-0</code>, <code>data-redpanda-1</code>, <code>data-redpanda-2</code>.</td></tr>
+</table>
+<div class="analogy"><b>Analogy.</b> The PVC is the hotel booking ("one room, one night"). The PV is the actual room. You deal with the booking; the hotel assigns the room.</div>
+
+<h2>9. ConfigMap, Secret and Job</h2>
+<table>
+  <tr><th style="width:22%">Object</th><th>Purpose</th><th>In Lab 4</th></tr>
+  <tr><td><b>ConfigMap</b></td><td>Plain configuration (text or whole files) kept outside the image, so you change settings without rebuilding.</td><td>Holds <code>nginx.conf</code> and mounts it into the Nginx pod as a file.</td></tr>
+  <tr><td><b>Secret</b></td><td>Same idea, but for sensitive values. Stored base64-encoded and handled more carefully by the cluster.</td><td><code>nginx-tls</code> holds the TLS certificate and private key &mdash; generated on the VM, never committed to Git.</td></tr>
+  <tr><td><b>Job</b></td><td>Runs a task <b>once</b> until it succeeds, then stops. A Deployment would restart it forever.</td><td><code>create-topics</code> waits for the brokers and creates <code>visits-topic</code> (3 partitions, 3 replicas) and <code>visits-dlq</code>.</td></tr>
+</table>
+
+<div class="pagebreak"></div>
+
+<h2>10. How it all fits together in Lab 4</h2>
+<pre>                Your browser
+                     |  https  (NodePort 30443)
+             +-------v--------+
+             | Service nginx  |  type: NodePort
+             +-------+--------+
+                     |
+             +-------v--------+   Deployment (1 pod)
+             |   Nginx pod    |   config from ConfigMap, cert from Secret
+             +-------+--------+
+                     |  random two least_conn
+       +-------------+-------------+
+       |             |             |          Service "flask" = HEADLESS
+  Flask pod 1   Flask pod 2   Flask pod 3     Deployment, replicas: 3
+       |             |             |
+       |  write: visit event (key = pod name)
+       +-------------+-------------+
+                     |
+             +-------v--------+  Service "redpanda" (ClusterIP)
+             |  redpanda-0/1/2 |  StatefulSet, 3 brokers, 1 PVC each
+             +-------+--------+   visits-topic: 3 partitions x 3 replicas
+                     |
+       +-------------+-------------+
+       |                           |
+ counter-worker              audit-worker        two Deployments
+ (counter-group)             (audit-group)       = fan-out: both read every event
+       |
+       |  update counters              bad message -> visits-dlq
+       v
+  Service "redis" (ClusterIP) -> Redis pod -> PVC (data survives restarts)
+       ^
+       |  read: Flask reads counters here and pushes them to the browser over SSE</pre>
+
+<h3>Object count in this lab</h3>
+<table>
+  <tr><th>Kind</th><th>Name(s)</th><th>Why that kind</th></tr>
+  <tr><td>Deployment</td><td>nginx, flask, counter-worker, audit-worker, redis</td><td>stateless or single instance; pods are interchangeable</td></tr>
+  <tr><td>StatefulSet</td><td>redpanda</td><td>3 brokers need fixed identities and private disks</td></tr>
+  <tr><td>Service (ClusterIP)</td><td>redis, redpanda</td><td>stable internal address with load balancing</td></tr>
+  <tr><td>Service (Headless)</td><td>flask, redpanda-headless</td><td>expose every pod individually</td></tr>
+  <tr><td>Service (NodePort)</td><td>nginx</td><td>the only entry point from outside</td></tr>
+  <tr><td>Job</td><td>create-topics</td><td>one-time setup task</td></tr>
+  <tr><td>ConfigMap / Secret</td><td>nginx-conf / nginx-tls</td><td>config and TLS kept out of the image</td></tr>
+  <tr><td>PVC</td><td>redis-data, data-redpanda-0/1/2</td><td>data that must survive pod restarts</td></tr>
+</table>
+
+<h2>11. From Docker Compose to Kubernetes</h2>
+<table>
+  <tr><th style="width:38%">Docker Compose (Lab 3)</th><th>Kubernetes (Lab 4)</th></tr>
+  <tr><td><code>services:</code> entry</td><td>Deployment or StatefulSet</td></tr>
+  <tr><td><code>deploy: replicas: 3</code></td><td><code>spec: replicas: 3</code></td></tr>
+  <tr><td>service name used as hostname</td><td>Service name used as hostname (via cluster DNS)</td></tr>
+  <tr><td><code>ports: "443:443"</code></td><td>Service of type NodePort (or Ingress)</td></tr>
+  <tr><td>named volume</td><td>PersistentVolumeClaim</td></tr>
+  <tr><td>bind-mounted config file</td><td>ConfigMap mounted as a file</td></tr>
+  <tr><td><code>environment:</code></td><td><code>env:</code> (or a ConfigMap/Secret reference)</td></tr>
+  <tr><td><code>healthcheck:</code></td><td><code>readinessProbe</code> / <code>livenessProbe</code></td></tr>
+  <tr><td><code>depends_on:</code></td><td>no direct equivalent &mdash; pods retry until dependencies are ready</td></tr>
+  <tr><td><code>restart: unless-stopped</code></td><td>automatic; the controller always restores desired state</td></tr>
+</table>
+
+<h2>12. The one-paragraph summary</h2>
+<p>A <b>Pod</b> runs your container but is disposable. A <b>ReplicaSet</b> keeps a fixed number of identical pods alive. A <b>Deployment</b> manages ReplicaSets and gives you safe rolling updates and rollbacks &mdash; use it for stateless things. A <b>StatefulSet</b> does the same but gives each pod a permanent name, DNS entry and private disk &mdash; use it for databases and brokers. Because pods keep changing IP, a <b>Service</b> provides a permanent address: <b>ClusterIP</b> for internal traffic, <b>NodePort</b> to open a port to the outside, and <b>headless</b> when a client needs to see each pod individually. An <b>Ingress</b> sits above Services and routes HTTP by hostname and path through a single entry point.</p>
+
+</body>
+</html>
