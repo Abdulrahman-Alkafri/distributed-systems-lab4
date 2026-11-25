@@ -1,15 +1,3 @@
-# Redpanda = the 3-broker Kafka cluster, deployed as a StatefulSet.
-#
-# Why StatefulSet and not Deployment?
-#   - stable names:   redpanda-0, redpanda-1, redpanda-2 (a Deployment gives random names)
-#   - stable storage: each pod keeps its OWN disk (volumeClaimTemplates)
-#   Brokers need both, because each one stores different partition data.
-#
-# Two Services:
-#   "redpanda-headless" -> gives each pod its own DNS name (redpanda-0.redpanda-headless)
-#                          brokers use this to find each other
-#   "redpanda"          -> one ClusterIP that clients (Flask, workers) connect to
-
 apiVersion: v1
 kind: Service
 metadata:

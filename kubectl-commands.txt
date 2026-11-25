@@ -407,6 +407,26 @@ IP=$(minikube ip); kubectl get pods; kubectl exec redpanda-0 -- rpk cluster heal
 kubectl exec deployment/redis -- redis-cli get global_visits
 
 ---------------------------------------------------------------------
+ "This site can't be reached / ERR_CONNECTION_TIMED_OUT" in the browser
+---------------------------------------------------------------------
+  The cluster is fine - the VM's firewall (ufw) is blocking the port.
+  ufw turns itself back on after a reboot, so this can come back.
+
+# 1) Is it really the firewall? On the VM this returns 200 even when the
+#    browser times out -> that means the app works, the port is blocked.
+curl -sk -o /dev/null -w "%{http_code}\n" https://127.0.0.1:30443/
+
+# 2) Open the two lab ports (you only need to do this once)
+sudo ufw allow 30443/tcp
+sudo ufw allow 30080/tcp
+
+# 3) Check they are listed
+sudo ufw status
+
+# Also make sure you typed https:// - port 30443 only speaks TLS, so a
+# bare "192.168.122.250:30443" goes to http and just hangs.
+
+---------------------------------------------------------------------
  Two things that look like errors after a reboot but are NORMAL
 ---------------------------------------------------------------------
 # 1) RESTARTS is 1 instead of 0.
