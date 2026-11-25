@@ -362,3 +362,64 @@ kubectl delete -f k8s/
 # the VM only has 4 GB of RAM. Stop minikube first:
 #   minikube stop
 #   cd ~/lab3 && docker compose up -d
+
+
+=====================================================================
+ PART 6 - AFTER THE VM WAS SHUT DOWN OR REBOOTED
+=====================================================================
+  Nothing is lost. Minikube normally restarts itself with the VM, and
+  the pods, the disks (PVCs) and the TLS secret all survive.
+  Do NOT re-run ./deploy.sh - you only need the 3 steps below.
+---------------------------------------------------------------------
+
+# 1) Is the cluster up? Want: host / kubelet / apiserver all "Running"
+minikube status
+
+# 2) Only if step 1 says "Stopped" - start it again (takes ~1 minute)
+minikube start
+
+# 3) Re-open the app to your laptop - this does NOT survive a reboot,
+#    because it is just a process, not a Kubernetes object.
+#    Leave it running in its own terminal.                [Ctrl+C to stop]
+cd ~/lab4 && ./expose.sh
+
+# Wait until every pod is Running, then open https://192.168.122.250:30443
+kubectl get pods -w                                      # [Ctrl+C to stop]
+
+---------------------------------------------------------------------
+ The 60-second "everything still works" test (one line, paste it all)
+---------------------------------------------------------------------
+IP=$(minikube ip); kubectl get pods; kubectl exec redpanda-0 -- rpk cluster health; for i in $(seq 1 9); do curl -sk https://$IP:30443/ | grep -oE "Pod Name: [a-z0-9-]+"; done | sort | uniq -c; kubectl exec redpanda-0 -- rpk topic describe visits-topic -p; kubectl exec redpanda-0 -- rpk group list; kubectl exec deployment/redis -- redis-cli get global_visits
+
+# What you should see:
+#   - 11 pods Running, plus the create-topics Job as "Completed"
+#   - rpk cluster health -> Healthy: true, All nodes [0 1 2],
+#     0 leaderless partitions, 0 under-replicated partitions
+#   - the 9 requests spread over all 3 Flask pods (e.g. 3 / 2 / 4)
+#     -> "random two least_conn" is load balancing
+#   - visits-topic -> 3 partitions, each with REPLICAS [0 1 2]
+#   - counter-group AND audit-group both "Stable"  -> fan-out works
+#   - a number for global_visits
+
+# The single most useful check: run it, send 2 requests, run it again.
+# If this number moves, the WHOLE chain is alive:
+#   Flask -> Redpanda -> counter-worker -> Redis
+kubectl exec deployment/redis -- redis-cli get global_visits
+
+---------------------------------------------------------------------
+ Two things that look like errors after a reboot but are NORMAL
+---------------------------------------------------------------------
+# 1) RESTARTS is 1 instead of 0.
+#    The reboot restarted the containers. Kubernetes is supposed to do
+#    that - it is the "desired state" model putting the pods back.
+
+# 2) The EPOCH column is 2 or 3 instead of 1.
+#    Every time a broker disappears, the survivors elect a new leader
+#    for its partitions and the epoch goes up by one. So the epoch is
+#    just a counter of "how many leader elections has this partition
+#    had". A higher number means failover worked.
+kubectl exec redpanda-0 -- rpk topic describe visits-topic -p
+
+# Pod names change after a reboot. Any command that needs a pod name
+# should read it instead of hard-coding it:
+kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}'
